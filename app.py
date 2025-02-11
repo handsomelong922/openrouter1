@@ -650,16 +650,57 @@ def generate_stream_response(response, start_time, data, api_key, model_name):
         logging.error(f"生成流式响应时发生错误: {str(e)}")
         raise
 
+def log_request_stats(api_key, model_name, prompt_tokens, completion_tokens, total_time, user_content, response_content):
+    """记录请求统计信息"""
+    try:
+        user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
+        response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
+        
+        logging.info(
+            f"使用的key: {api_key}, "
+            f"提示token: {prompt_tokens}, "
+            f"输出token: {completion_tokens}, "
+            f"总共用时: {total_time:.4f}秒, "
+            f"使用的模型: {model_name}, "
+            f"用户的内容: {user_content_replaced}, "
+            f"输出的内容: {response_content_replaced}"
+        )
+        
+        with data_lock:
+            request_timestamps.append(time.time())
+            token_counts.append(prompt_tokens + completion_tokens)
+            request_timestamps_day.append(time.time())
+            token_counts_day.append(prompt_tokens + completion_tokens)
+    except Exception as e:
+        logging.error(f"记录请求统计信息时发生错误: {str(e)}")
+
 def process_normal_response(response, start_time, data, api_key, model_name):
+    """处理普通（非流式）响应"""
     try:
         end_time = time.time()
         response_json = response.json()
         total_time = end_time - start_time
         
         try:
-            prompt_tokens = response_json["usage"]["prompt_tokens"]
-            completion_tokens = response_json["usage"]["completion_tokens"]
-            response_content = response_json["choices"][0]["message"]["content"]
+            # 首先尝试从response_json中获取usage信息
+            if "usage" in response_json:
+                prompt_tokens = response_json["usage"].get("prompt_tokens", 0)
+                completion_tokens = response_json["usage"].get("completion_tokens", 0)
+            else:
+                prompt_tokens = 0
+                completion_tokens = 0
+                logging.warning("响应中没有usage信息")
+            
+            # 获取response_content
+            if "choices" in response_json and len(response_json["choices"]) > 0:
+                if "message" in response_json["choices"][0]:
+                    response_content = response_json["choices"][0]["message"].get("content", "")
+                else:
+                    response_content = ""
+            else:
+                response_content = ""
+                logging.warning("响应中没有content信息")
+                
         except (KeyError, IndexError) as e:
             logging.error(f"解析响应JSON时发生错误: {str(e)}")
             prompt_tokens = 0
@@ -673,11 +714,39 @@ def process_normal_response(response, start_time, data, api_key, model_name):
             total_time, user_content, response_content
         )
         
+        # 如果没有正确的响应格式，构造一个标准响应
+        if not response_json.get("choices"):
+            formatted_response = {
+                "id": str(uuid.uuid4()),
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": response_content
+                        },
+                        "finish_reason": "stop"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens
+                }
+            }
+            return jsonify(formatted_response)
+        
         return jsonify(response_json)
         
     except Exception as e:
         logging.error(f"处理普通响应时发生错误: {str(e)}")
-        raise
+        return jsonify({
+            "error": "Response processing error",
+            "details": str(e)
+        }), 500
 
 def log_completion_stats(api_key, model_name, data, response_content, full_response_content, total_time, first_token_time):
     try:
