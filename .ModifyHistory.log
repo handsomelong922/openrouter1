@@ -39,3 +39,8 @@
 - 更新get_all_models函数，自动添加免费版本模型
 - 简化refresh_models函数，直接通过后缀判断免费模型
 - 移除多余的模型测试逻辑 
+
+[2024-03-21 12:30:00] 修复chat_completions错误：
+- 移除非流式响应中未定义的first_token_time变量
+- 修复response_content的获取方式
+- 简化非流式响应的日志记录 

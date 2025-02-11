@@ -846,7 +846,6 @@ def handsome_chat_completions():
                 f"使用的key: {api_key}, "
                 f"提示token: {prompt_tokens}, "
                 f"输出token: {completion_tokens}, "
-                f"首字用时: 0, "
                 f"总共用时: {total_time:.4f}秒, "
                 f"使用的模型: {model_name}, "
                 f"用户的内容: {user_content_replaced}, "
@@ -959,7 +958,6 @@ def handsome_chat_completions():
                         f"使用的key: {api_key}, "
                         f"提示token: {prompt_tokens}, "
                         f"输出token: {completion_tokens}, "
-                        f"首字用时: {first_token_time:.4f}秒, "
                         f"总共用时: {total_time:.4f}秒, "
                         f"使用的模型: {model_name}, "
                         f"用户的内容: {user_content_replaced}, "
@@ -991,7 +989,7 @@ def handsome_chat_completions():
                     )
                     prompt_tokens = 0
                     completion_tokens = 0
-                response_content = ""
+                response_content = response_json["choices"][0]["message"]["content"]
                 user_content = extract_user_content(data.get("messages", []))
                 user_content_replaced = user_content.replace(
                     '\n', '\\n'
@@ -1003,7 +1001,6 @@ def handsome_chat_completions():
                     f"使用的key: {api_key}, "
                     f"提示token: {prompt_tokens}, "
                     f"输出token: {completion_tokens}, "
-                    f"首字用时: {first_token_time:.4f}秒, "
                     f"总共用时: {total_time:.4f}秒, "
                     f"使用的模型: {model_name}, "
                     f"用户的内容: {user_content_replaced}, "
