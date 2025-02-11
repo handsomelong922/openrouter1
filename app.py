@@ -640,22 +640,22 @@ def handsome_chat_completions():
         return jsonify({"error": "Unexpected error", "details": str(e)}), 500
 
 def generate_stream_response(response, start_time, data, api_key, model_name):
-                first_chunk_time = None
-                full_response_content = ""
+    first_chunk_time = None
+    full_response_content = ""
     response_content = ""
     
     try:
         for chunk in response.iter_content(chunk_size=2048):
-                    if chunk:
-                        if first_chunk_time is None:
-                            first_chunk_time = time.time()
+            if chunk:
+                if first_chunk_time is None:
+                    first_chunk_time = time.time()
                 chunk_str = chunk.decode("utf-8")
                 full_response_content += chunk_str
                 yield chunk
                 
                 try:
                     for line in chunk_str.splitlines():
-                    if line.startswith("data:"):
+                        if line.startswith("data:"):
                             line_json = json.loads(line[5:].strip())
                             if (
                                 "choices" in line_json and
@@ -688,23 +688,62 @@ def log_request_stats(api_key, model_name, prompt_tokens, completion_tokens, tot
         user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
         response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
         
-                logging.info(
-                    f"使用的key: {api_key}, "
-                    f"提示token: {prompt_tokens}, "
-                    f"输出token: {completion_tokens}, "
-                    f"总共用时: {total_time:.4f}秒, "
-                    f"使用的模型: {model_name}, "
-                    f"用户的内容: {user_content_replaced}, "
-                    f"输出的内容: {response_content_replaced}"
-                )
+        logging.info(
+            f"使用的key: {api_key}, "
+            f"提示token: {prompt_tokens}, "
+            f"输出token: {completion_tokens}, "
+            f"总共用时: {total_time:.4f}秒, "
+            f"使用的模型: {model_name}, "
+            f"用户的内容: {user_content_replaced}, "
+            f"输出的内容: {response_content_replaced}"
+        )
         
-                with data_lock:
-                    request_timestamps.append(time.time())
-                    token_counts.append(prompt_tokens + completion_tokens)
+        with data_lock:
+            request_timestamps.append(time.time())
+            token_counts.append(prompt_tokens + completion_tokens)
             request_timestamps_day.append(time.time())
             token_counts_day.append(prompt_tokens + completion_tokens)
     except Exception as e:
         logging.error(f"记录请求统计信息时发生错误: {str(e)}")
+
+def log_completion_stats(api_key, model_name, data, response_content, full_response_content, total_time, first_token_time):
+    try:
+        prompt_tokens = 0
+        completion_tokens = 0
+        
+        for line in full_response_content.splitlines():
+            if line.startswith("data:"):
+                try:
+                    line_json = json.loads(line[5:].strip())
+                    if "usage" in line_json:
+                        prompt_tokens = line_json["usage"].get("prompt_tokens", 0)
+                        completion_tokens = line_json["usage"].get("completion_tokens", 0)
+                except (json.JSONDecodeError, KeyError):
+                    continue
+                    
+        user_content = extract_user_content(data.get("messages", []))
+        user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
+        response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
+        
+        logging.info(
+            f"使用的key: {api_key}, "
+            f"提示token: {prompt_tokens}, "
+            f"输出token: {completion_tokens}, "
+            f"首字用时: {first_token_time:.4f}秒, "
+            f"总共用时: {total_time:.4f}秒, "
+            f"使用的模型: {model_name}, "
+            f"用户的内容: {user_content_replaced}, "
+            f"输出的内容: {response_content_replaced}"
+        )
+        
+        with data_lock:
+            request_timestamps.append(time.time())
+            token_counts.append(prompt_tokens + completion_tokens)
+            request_timestamps_day.append(time.time())
+            token_counts_day.append(prompt_tokens + completion_tokens)
+            
+    except Exception as e:
+        logging.error(f"记录完成统计信息时发生错误: {str(e)}")
 
 def process_normal_response(response, start_time, data, api_key, model_name):
     """处理普通（非流式）响应"""
@@ -760,45 +799,6 @@ def process_normal_response(response, start_time, data, api_key, model_name):
             "error": "Response processing error",
             "details": str(e)
         }), 500
-
-def log_completion_stats(api_key, model_name, data, response_content, full_response_content, total_time, first_token_time):
-    try:
-                    prompt_tokens = 0
-                    completion_tokens = 0
-        
-                    for line in full_response_content.splitlines():
-                        if line.startswith("data:"):
-                try:
-                    line_json = json.loads(line[5:].strip())
-                    if "usage" in line_json:
-                        prompt_tokens = line_json["usage"].get("prompt_tokens", 0)
-                        completion_tokens = line_json["usage"].get("completion_tokens", 0)
-                except (json.JSONDecodeError, KeyError):
-                    continue
-                    
-                    user_content = extract_user_content(data.get("messages", []))
-        user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
-        response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
-        
-                    logging.info(
-                        f"使用的key: {api_key}, "
-                        f"提示token: {prompt_tokens}, "
-                        f"输出token: {completion_tokens}, "
-                        f"首字用时: {first_token_time:.4f}秒, "
-                        f"总共用时: {total_time:.4f}秒, "
-                        f"使用的模型: {model_name}, "
-                        f"用户的内容: {user_content_replaced}, "
-                        f"输出的内容: {response_content_replaced}"
-                    )
-        
-                    with data_lock:
-                        request_timestamps.append(time.time())
-            token_counts.append(prompt_tokens + completion_tokens)
-                        request_timestamps_day.append(time.time())
-            token_counts_day.append(prompt_tokens + completion_tokens)
-            
-    except Exception as e:
-        logging.error(f"记录完成统计信息时发生错误: {str(e)}")
 
 # 添加OPTIONS请求处理
 @app.route('/models', methods=['OPTIONS'])
