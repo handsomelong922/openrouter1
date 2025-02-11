@@ -8,6 +8,7 @@ from flask import Flask, request, jsonify, Response, stream_with_context, render
 from werkzeug.middleware.proxy_fix import ProxyFix
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
+from flask_cors import CORS  # 添加这行
 os.environ['TZ'] = 'Asia/Shanghai'
 time.tzset()
 logging.basicConfig(level=logging.INFO,
@@ -37,6 +38,7 @@ def requests_session_with_retries(
     return session
 session = requests_session_with_retries()
 app = Flask(__name__)
+CORS(app)  # 启用CORS支持
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
 models = {
     "text": [],
@@ -443,6 +445,7 @@ def index():
 
     return render_template('index.html', rpm=rpm, tpm=tpm, rpd=rpd, tpd=tpd, key_balances=key_balances) # Render template instead of jsonify
 
+@app.route('/models', methods=['GET'])
 @app.route('/v1/models', methods=['GET'])
 def list_models():
     if not check_authorization(request):
@@ -481,10 +484,12 @@ def list_models():
                 "root": model + "-openwebui",
                 "parent": None
             })
-    return jsonify({
+    response = jsonify({
         "success": True,
         "data": detailed_models
     })
+    return response
+
 @app.route('/v1/dashboard/billing/usage', methods=['GET'])
 def billing_usage():
     if not check_authorization(request):
@@ -551,15 +556,9 @@ def handsome_chat_completions():
         
         api_key = select_key(request_type, model_name)
         if not api_key:
-            return jsonify(
-                {
-                    "error": (
-                        "No available API key for this "
-                        "request type or all keys have "
-                        "reached their limits"
-                    )
-                }
-            ), 429
+            return jsonify({
+                "error": "No available API key for this request type or all keys have reached their limits"
+            }), 429
             
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -576,54 +575,87 @@ def handsome_chat_completions():
                 timeout=60
             )
             response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            logging.error(f"请求OpenRouter API失败: {str(e)}")
-            return jsonify({"error": "Failed to connect to OpenRouter API", "details": str(e)}), 502
             
-        if response.status_code == 429:
-            return jsonify(response.json()), 429
-            
-        if data.get("stream", False):
-            try:
+            if response.status_code == 429:
+                return jsonify(response.json()), 429
+                
+            if data.get("stream", False):
                 return Response(
                     stream_with_context(generate_stream_response(
                         response, start_time, data, api_key, model_name
                     )),
                     content_type="text/event-stream"
                 )
-            except Exception as e:
-                logging.error(f"处理流式响应时发生错误: {str(e)}")
-                return jsonify({"error": "Stream processing error", "details": str(e)}), 500
-        else:
-            try:
-                return process_normal_response(
-                    response, start_time, data, api_key, model_name
-                )
-            except Exception as e:
-                logging.error(f"处理普通响应时发生错误: {str(e)}")
-                return jsonify({"error": "Response processing error", "details": str(e)}), 500
+            else:
+                response_json = response.json()
+                end_time = time.time()
+                total_time = end_time - start_time
                 
+                # 获取token使用情况
+                usage = response_json.get("usage", {})
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                
+                # 获取响应内容
+                choices = response_json.get("choices", [])
+                response_content = ""
+                if choices and choices[0].get("message"):
+                    response_content = choices[0]["message"].get("content", "")
+                
+                # 记录日志
+                user_content = extract_user_content(data.get("messages", []))
+                user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
+                response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
+                
+                logging.info(
+                    f"使用的key: {api_key}, "
+                    f"提示token: {prompt_tokens}, "
+                    f"输出token: {completion_tokens}, "
+                    f"总共用时: {total_time:.4f}秒, "
+                    f"使用的模型: {model_name}, "
+                    f"用户的内容: {user_content_replaced}, "
+                    f"输出的内容: {response_content_replaced}"
+                )
+                
+                # 更新统计信息
+                with data_lock:
+                    request_timestamps.append(time.time())
+                    token_counts.append(prompt_tokens + completion_tokens)
+                    request_timestamps_day.append(time.time())
+                    token_counts_day.append(prompt_tokens + completion_tokens)
+                
+                # 如果响应是空的，记录警告
+                if not response_content:
+                    logging.warning(f"模型 {model_name} 返回了空响应")
+                
+                # 直接返回原始响应
+                return jsonify(response_json)
+                
+        except requests.exceptions.RequestException as e:
+            logging.error(f"请求OpenRouter API失败: {str(e)}")
+            return jsonify({"error": "Failed to connect to OpenRouter API", "details": str(e)}), 502
+            
     except Exception as e:
         logging.error(f"处理请求时发生未预期的错误: {str(e)}")
         return jsonify({"error": "Unexpected error", "details": str(e)}), 500
 
 def generate_stream_response(response, start_time, data, api_key, model_name):
-    first_chunk_time = None
-    full_response_content = ""
+                first_chunk_time = None
+                full_response_content = ""
     response_content = ""
     
     try:
         for chunk in response.iter_content(chunk_size=2048):
-            if chunk:
-                if first_chunk_time is None:
-                    first_chunk_time = time.time()
+                    if chunk:
+                        if first_chunk_time is None:
+                            first_chunk_time = time.time()
                 chunk_str = chunk.decode("utf-8")
                 full_response_content += chunk_str
                 yield chunk
                 
                 try:
                     for line in chunk_str.splitlines():
-                        if line.startswith("data:"):
+                    if line.startswith("data:"):
                             line_json = json.loads(line[5:].strip())
                             if (
                                 "choices" in line_json and
@@ -656,19 +688,19 @@ def log_request_stats(api_key, model_name, prompt_tokens, completion_tokens, tot
         user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
         response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
         
-        logging.info(
-            f"使用的key: {api_key}, "
-            f"提示token: {prompt_tokens}, "
-            f"输出token: {completion_tokens}, "
-            f"总共用时: {total_time:.4f}秒, "
-            f"使用的模型: {model_name}, "
-            f"用户的内容: {user_content_replaced}, "
-            f"输出的内容: {response_content_replaced}"
-        )
+                logging.info(
+                    f"使用的key: {api_key}, "
+                    f"提示token: {prompt_tokens}, "
+                    f"输出token: {completion_tokens}, "
+                    f"总共用时: {total_time:.4f}秒, "
+                    f"使用的模型: {model_name}, "
+                    f"用户的内容: {user_content_replaced}, "
+                    f"输出的内容: {response_content_replaced}"
+                )
         
-        with data_lock:
-            request_timestamps.append(time.time())
-            token_counts.append(prompt_tokens + completion_tokens)
+                with data_lock:
+                    request_timestamps.append(time.time())
+                    token_counts.append(prompt_tokens + completion_tokens)
             request_timestamps_day.append(time.time())
             token_counts_day.append(prompt_tokens + completion_tokens)
     except Exception as e:
@@ -681,64 +713,45 @@ def process_normal_response(response, start_time, data, api_key, model_name):
         response_json = response.json()
         total_time = end_time - start_time
         
-        try:
-            # 首先尝试从response_json中获取usage信息
-            if "usage" in response_json:
-                prompt_tokens = response_json["usage"].get("prompt_tokens", 0)
-                completion_tokens = response_json["usage"].get("completion_tokens", 0)
-            else:
-                prompt_tokens = 0
-                completion_tokens = 0
-                logging.warning("响应中没有usage信息")
-            
-            # 获取response_content
-            if "choices" in response_json and len(response_json["choices"]) > 0:
-                if "message" in response_json["choices"][0]:
-                    response_content = response_json["choices"][0]["message"].get("content", "")
-                else:
-                    response_content = ""
-            else:
-                response_content = ""
-                logging.warning("响应中没有content信息")
-                
-        except (KeyError, IndexError) as e:
-            logging.error(f"解析响应JSON时发生错误: {str(e)}")
-            prompt_tokens = 0
-            completion_tokens = 0
-            response_content = ""
+        # 获取token使用情况
+        usage = response_json.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        
+        # 获取响应内容
+        choices = response_json.get("choices", [])
+        response_content = ""
+        if choices:
+            message = choices[0].get("message", {})
+            response_content = message.get("content", "")
             
         # 记录日志
         user_content = extract_user_content(data.get("messages", []))
-        log_request_stats(
-            api_key, model_name, prompt_tokens, completion_tokens,
-            total_time, user_content, response_content
+        user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
+        response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
+        
+        logging.info(
+            f"使用的key: {api_key}, "
+            f"提示token: {prompt_tokens}, "
+            f"输出token: {completion_tokens}, "
+            f"总共用时: {total_time:.4f}秒, "
+            f"使用的模型: {model_name}, "
+            f"用户的内容: {user_content_replaced}, "
+            f"输出的内容: {response_content_replaced}"
         )
         
-        # 如果没有正确的响应格式，构造一个标准响应
-        if not response_json.get("choices"):
-            formatted_response = {
-                "id": str(uuid.uuid4()),
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": model_name,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": response_content
-                        },
-                        "finish_reason": "stop"
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens
-                }
-            }
-            return jsonify(formatted_response)
+        # 更新统计信息
+        with data_lock:
+            request_timestamps.append(time.time())
+            token_counts.append(prompt_tokens + completion_tokens)
+            request_timestamps_day.append(time.time())
+            token_counts_day.append(prompt_tokens + completion_tokens)
         
+        # 如果响应是空的或没有内容，记录警告
+        if not response_content:
+            logging.warning(f"模型 {model_name} 返回了空响应")
+            
+        # 直接返回原始响应，保持与API的一致性
         return jsonify(response_json)
         
     except Exception as e:
@@ -750,11 +763,11 @@ def process_normal_response(response, start_time, data, api_key, model_name):
 
 def log_completion_stats(api_key, model_name, data, response_content, full_response_content, total_time, first_token_time):
     try:
-        prompt_tokens = 0
-        completion_tokens = 0
+                    prompt_tokens = 0
+                    completion_tokens = 0
         
-        for line in full_response_content.splitlines():
-            if line.startswith("data:"):
+                    for line in full_response_content.splitlines():
+                        if line.startswith("data:"):
                 try:
                     line_json = json.loads(line[5:].strip())
                     if "usage" in line_json:
@@ -763,29 +776,39 @@ def log_completion_stats(api_key, model_name, data, response_content, full_respo
                 except (json.JSONDecodeError, KeyError):
                     continue
                     
-        user_content = extract_user_content(data.get("messages", []))
+                    user_content = extract_user_content(data.get("messages", []))
         user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
         response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
         
-        logging.info(
-            f"使用的key: {api_key}, "
-            f"提示token: {prompt_tokens}, "
-            f"输出token: {completion_tokens}, "
-            f"首字用时: {first_token_time:.4f}秒, "
-            f"总共用时: {total_time:.4f}秒, "
-            f"使用的模型: {model_name}, "
-            f"用户的内容: {user_content_replaced}, "
-            f"输出的内容: {response_content_replaced}"
-        )
+                    logging.info(
+                        f"使用的key: {api_key}, "
+                        f"提示token: {prompt_tokens}, "
+                        f"输出token: {completion_tokens}, "
+                        f"首字用时: {first_token_time:.4f}秒, "
+                        f"总共用时: {total_time:.4f}秒, "
+                        f"使用的模型: {model_name}, "
+                        f"用户的内容: {user_content_replaced}, "
+                        f"输出的内容: {response_content_replaced}"
+                    )
         
-        with data_lock:
-            request_timestamps.append(time.time())
+                    with data_lock:
+                        request_timestamps.append(time.time())
             token_counts.append(prompt_tokens + completion_tokens)
-            request_timestamps_day.append(time.time())
+                        request_timestamps_day.append(time.time())
             token_counts_day.append(prompt_tokens + completion_tokens)
             
     except Exception as e:
         logging.error(f"记录完成统计信息时发生错误: {str(e)}")
+
+# 添加OPTIONS请求处理
+@app.route('/models', methods=['OPTIONS'])
+@app.route('/v1/models', methods=['OPTIONS'])
+def handle_options():
+    response = jsonify({})
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    return response
 
 if __name__ == '__main__':
     logging.info(f"环境变量：{os.environ}")
