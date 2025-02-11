@@ -526,501 +526,198 @@ def billing_subscription():
     })
 @app.route('/v1/chat/completions', methods=['POST'])
 def handsome_chat_completions():
-    if not check_authorization(request):
-        return jsonify({"error": "Unauthorized"}), 401
-    data = request.get_json()
-    if not data or 'model' not in data:
-        return jsonify({"error": "Invalid request data"}), 400
-    model_name = data['model']
-    if model_name not in models["text"]:
-        if "DeepSeek-R1" in model_name and (model_name.endswith("-openwebui") or model_name.endswith("-thinking")):
-            pass
+    try:
+        if not check_authorization(request):
+            return jsonify({"error": "Unauthorized"}), 401
+        
+        data = request.get_json()
+        if not data or 'model' not in data:
+            return jsonify({"error": "Invalid request data"}), 400
+        
+        model_name = data['model']
+        if model_name not in models["text"]:
+            if "DeepSeek-R1" in model_name and (model_name.endswith("-openwebui") or model_name.endswith("-thinking")):
+                model_realname = model_name.replace("-thinking", "").replace("-openwebui", "")
+            else:
+                return jsonify({"error": "Invalid model"}), 400
         else:
-            return jsonify({"error": "Invalid model"}), 400
-    model_realname = model_name.replace("-thinking", "").replace("-openwebui", "")
-    request_type = determine_request_type(
-        model_realname,
-        models["text"],
-        models["free_text"]
-    )
-    api_key = select_key(request_type, model_name)
-    if not api_key:
-        return jsonify(
-            {
-                "error": (
-                    "No available API key for this "
-                    "request type or all keys have "
-                    "reached their limits"
-                )
-            }
-        ), 429
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    if "DeepSeek-R1" in model_name and ("thinking" in model_name or "openwebui" in model_name):
-        data['model'] = model_realname
-        start_time = time.time()
-        response = requests.post(
-            TEST_MODEL_ENDPOINT,
-            headers=headers,
-            json=data,
-            stream=data.get("stream", False),
-            timeout=120
+            model_realname = model_name
+            
+        request_type = determine_request_type(
+            model_realname,
+            models["text"],
+            models["free_text"]
         )
-        if response.status_code == 429:
-            return jsonify(response.json()), 429
-        if data.get("stream", False):
-            def generate():
-                if model_name.endswith("-openwebui"):
-                    first_chunk_time = None
-                    full_response_content = ""
-                    reasoning_content_accumulated = ""
-                    content_accumulated = ""
-                    first_reasoning_chunk = True
-                    for chunk in response.iter_lines():
-                        if chunk:
-                            if first_chunk_time is None:
-                                first_chunk_time = time.time()
-                            full_response_content += chunk.decode("utf-8")
-                            for line in chunk.decode("utf-8").splitlines():
-                                if line.startswith("data:"):
-                                    try:
-                                        chunk_json = json.loads(line.lstrip("data: ").strip())
-                                        if "choices" in chunk_json and len(chunk_json["choices"]) > 0:
-                                            delta = chunk_json["choices"][0].get("delta", {})
-                                            if delta.get("reasoning_content") is not None:
-                                                reasoning_chunk = delta["reasoning_content"]
-                                                if first_reasoning_chunk:
-                                                    think_chunk = f"<"
-                                                    yield f"data: {json.dumps({'choices': [{'delta': {'content': think_chunk}, 'index': 0}]})}\n\n"
-                                                    think_chunk = f"think"
-                                                    yield f"data: {json.dumps({'choices': [{'delta': {'content': think_chunk}, 'index': 0}]})}\n\n"
-                                                    think_chunk = f">\n"
-                                                    yield f"data: {json.dumps({'choices': [{'delta': {'content': think_chunk}, 'index': 0}]})}\n\n"
-                                                    first_reasoning_chunk = False
-                                                yield f"data: {json.dumps({'choices': [{'delta': {'content': reasoning_chunk}, 'index': 0}]})}\n\n"
-                                            if delta.get("content") is not None:
-                                                if not first_reasoning_chunk:
-                                                    reasoning_chunk = f"\n</think>\n"
-                                                    yield f"data: {json.dumps({'choices': [{'delta': {'content': reasoning_chunk}, 'index': 0}]})}\n\n"
-                                                    first_reasoning_chunk = True
-                                                yield f"data: {json.dumps({'choices': [{'delta': {'content': delta["content"]}, 'index': 0}]})}\n\n"
-                                    except (KeyError, ValueError, json.JSONDecodeError) as e:
-                                        continue
-                    end_time = time.time()
-                    first_token_time = (
-                        first_chunk_time - start_time
-                        if first_chunk_time else 0
+        
+        api_key = select_key(request_type, model_name)
+        if not api_key:
+            return jsonify(
+                {
+                    "error": (
+                        "No available API key for this "
+                        "request type or all keys have "
+                        "reached their limits"
                     )
-                    total_time = end_time - start_time
-                    prompt_tokens = 0
-                    completion_tokens = 0
-                    for line in full_response_content.splitlines():
-                        if line.startswith("data:"):
-                            line = line[5:].strip()
-                            if line == "[DONE]":
-                                continue
-                            try:
-                                response_json = json.loads(line)
-                                if (
-                                    "usage" in response_json and
-                                    "completion_tokens" in response_json["usage"]
-                                ):
-                                    completion_tokens += response_json[
-                                        "usage"
-                                    ]["completion_tokens"]
-                                if (
-                                    "usage" in response_json and
-                                    "prompt_tokens" in response_json["usage"]
-                                ):
-                                    prompt_tokens = response_json[
-                                        "usage"
-                                    ]["prompt_tokens"]
-                            except ( KeyError,ValueError,IndexError) as e:
-                                pass
-                    user_content = ""
-                    messages = data.get("messages", [])
-                    for message in messages:
-                        if message["role"] == "user":
-                            if isinstance(message["content"], str):
-                                user_content += message["content"] + " "
-                            elif isinstance(message["content"], list):
-                                for item in message["content"]:
-                                    if (
-                                        isinstance(item, dict) and
-                                        item.get("type") == "text"
-                                    ):
-                                        user_content += (
-                                            item.get("text", "") +
-                                            " "
-                                        )
-                    user_content = user_content.strip()
-                    user_content_replaced = user_content.replace(
-                        '\n', '\\n'
-                    ).replace('\r', '\\n')
-                    response_content_replaced = (f"```Thinking\n{reasoning_content_accumulated}\n```\n" if reasoning_content_accumulated else "") + content_accumulated
-                    response_content_replaced = response_content_replaced.replace(
-                        '\n', '\\n'
-                    ).replace('\r', '\\n')
-                    logging.info(
-                        f"使用的key: {api_key}, "
-                        f"提示token: {prompt_tokens}, "
-                        f"输出token: {completion_tokens}, "
-                        f"首字用时: {first_token_time:.4f}秒, "
-                        f"总共用时: {total_time:.4f}秒, "
-                        f"使用的模型: {model_name}, "
-                        f"用户的内容: {user_content_replaced}, "
-                        f"输出的内容: {response_content_replaced}"
-                    )
-                    with data_lock:
-                        request_timestamps.append(time.time())
-                        token_counts.append(prompt_tokens + completion_tokens)
-                    yield "data: [DONE]\n\n"
-                    return Response(
-                        stream_with_context(generate()),
-                        content_type="text/event-stream"
-                    )
-                first_chunk_time = None
-                full_response_content = ""
-                reasoning_content_accumulated = ""
-                content_accumulated = ""
-                first_reasoning_chunk = True
-                for chunk in response.iter_lines():
-                    if chunk:
-                        if first_chunk_time is None:
-                            first_chunk_time = time.time()
-                        full_response_content += chunk.decode("utf-8")
-                        for line in chunk.decode("utf-8").splitlines():
-                            if line.startswith("data:"):
-                                try:
-                                    chunk_json = json.loads(line.lstrip("data: ").strip())
-                                    if "choices" in chunk_json and len(chunk_json["choices"]) > 0:
-                                        delta = chunk_json["choices"][0].get("delta", {})
-                                        if delta.get("reasoning_content") is not None:
-                                            reasoning_chunk = delta["reasoning_content"]
-                                            reasoning_chunk = reasoning_chunk.replace('\n', '\n> ')
-                                            if first_reasoning_chunk:
-                                                reasoning_chunk = "> " + reasoning_chunk
-                                                first_reasoning_chunk = False
-                                            yield f"data: {json.dumps({'choices': [{'delta': {'content': reasoning_chunk}, 'index': 0}]})}\n\n"
-                                        if delta.get("content") is not None:
-                                            if not first_reasoning_chunk:
-                                                yield f"data: {json.dumps({'choices': [{'delta': {'content': '\n\n'}, 'index': 0}]})}\n\n"
-                                                first_reasoning_chunk = True
-                                            yield f"data: {json.dumps({'choices': [{'delta': {'content': delta["content"]}, 'index': 0}]})}\n\n"
-                                except (KeyError, ValueError, json.JSONDecodeError) as e:
-                                    continue
-                    end_time = time.time()
-                    first_token_time = (
-                        first_chunk_time - start_time
-                        if first_chunk_time else 0
-                    )
-                    total_time = end_time - start_time
-                    prompt_tokens = 0
-                    completion_tokens = 0
-                    for line in full_response_content.splitlines():
-                        if line.startswith("data:"):
-                            line = line[5:].strip()
-                            if line == "[DONE]":
-                                continue
-                            try:
-                                response_json = json.loads(line)
-                                if (
-                                    "usage" in response_json and
-                                    "completion_tokens" in response_json["usage"]
-                                ):
-                                    completion_tokens += response_json[
-                                        "usage"
-                                    ]["completion_tokens"]
-                                if (
-                                    "usage" in response_json and
-                                    "prompt_tokens" in response_json["usage"]
-                                ):
-                                    prompt_tokens = response_json[
-                                        "usage"
-                                    ]["prompt_tokens"]
-                            except (KeyError,ValueError,IndexError) as e:
-                                pass
-                    user_content = ""
-                    messages = data.get("messages", [])
-                    for message in messages:
-                        if message["role"] == "user":
-                            if isinstance(message["content"], str):
-                                user_content += message["content"] + " "
-                            elif isinstance(message["content"], list):
-                                for item in message["content"]:
-                                    if (
-                                        isinstance(item, dict) and
-                                        item.get("type") == "text"
-                                    ):
-                                        user_content += (
-                                            item.get("text", "") +
-                                            " "
-                                        )
-                    user_content = user_content.strip()
-                    user_content_replaced = user_content.replace(
-                        '\n', '\\n'
-                    ).replace('\r', '\\n')
-                    response_content_replaced = response_content.replace(
-                        '\n', '\\n'
-                    ).replace('\r', '\\n')
-                    logging.info(
-                        f"使用的key: {api_key}, "
-                        f"提示token: {prompt_tokens}, "
-                        f"输出token: {completion_tokens}, "
-                        f"首字用时: {first_token_time:.4f}秒, "
-                        f"总共用时: {total_time:.4f}秒, "
-                        f"使用的模型: {model_name}, "
-                        f"用户的内容: {user_content_replaced}, "
-                        f"输出的内容: {response_content_replaced}"
-                    )
-                    with data_lock:
-                        request_timestamps.append(time.time())
-                        token_counts.append(prompt_tokens + completion_tokens)
-                    yield "data: [DONE]\n\n"
-            return Response(
-                stream_with_context(generate()),
-                content_type="text/event-stream"
-            )
-        else:
-            response.raise_for_status()
-            end_time = time.time()
-            response_json = response.json()
-            total_time = end_time - start_time
-            try:
-                prompt_tokens = response_json["usage"]["prompt_tokens"]
-                completion_tokens = response_json["usage"]["completion_tokens"]
-                response_content = ""
-                if model_name.endswith("-thinking") and "choices" in response_json and len(response_json["choices"]) > 0:
-                    choice = response_json["choices"][0]
-                    if "message" in choice:
-                        if "reasoning_content" in choice["message"]:
-                            reasoning_content = choice["message"]["reasoning_content"]
-                            reasoning_content = reasoning_content.replace('\n', '\n> ')
-                            reasoning_content = '> ' + reasoning_content
-                            formatted_reasoning = f"{reasoning_content}\n"
-                            response_content += formatted_reasoning + "\n"
-                        if "content" in choice["message"]:
-                            response_content += choice["message"]["content"]
-                elif model_name.endswith("-openwebui") and "choices" in response_json and len(response_json["choices"]) > 0:
-                    choice = response_json["choices"][0]
-                    if "message" in choice:
-                        if "reasoning_content" in choice["message"]:
-                            reasoning_content = choice["message"]["reasoning_content"]
-                            response_content += f"<think>\n{reasoning_content}\n</think>\n"
-                        if "content" in choice["message"]:
-                            response_content += choice["message"]["content"]
-            except (KeyError, ValueError, IndexError) as e:
-                logging.error(
-                    f"解析非流式响应 JSON 失败: {e}, "
-                    f"完整内容: {response_json}"
-                )
-                prompt_tokens = 0
-                completion_tokens = 0
-                response_content = ""
-            user_content = ""
-            messages = data.get("messages", [])
-            for message in messages:
-                if message["role"] == "user":
-                    if isinstance(message["content"], str):
-                        user_content += message["content"] + " "
-                    elif isinstance(message["content"], list):
-                        for item in message["content"]:
-                            if (
-                                isinstance(item, dict) and
-                                item.get("type") == "text"
-                            ):
-                                user_content += (
-                                    item.get("text", "") +
-                                    " "
-                                )
-            user_content = user_content.strip()
-            user_content_replaced = user_content.replace(
-                '\n', '\\n'
-            ).replace('\r', '\\n')
-            response_content_replaced = response_content.replace(
-                '\n', '\\n'
-            ).replace('\r', '\\n')
-            logging.info(
-                f"使用的key: {api_key}, "
-                f"提示token: {prompt_tokens}, "
-                f"输出token: {completion_tokens}, "
-                f"总共用时: {total_time:.4f}秒, "
-                f"使用的模型: {model_name}, "
-                f"用户的内容: {user_content_replaced}, "
-                f"输出的内容: {response_content_replaced}"
-            )
-            with data_lock:
-                request_timestamps.append(time.time())
-                token_counts.append(prompt_tokens + completion_tokens)
-            formatted_response = {
-                "id": response_json.get("id", ""),
-                "object": "chat.completion",
-                "created": response_json.get("created", int(time.time())),
-                "model": model_name,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": response_content
-                        },
-                        "finish_reason": "stop"
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens
                 }
-            }
-            return jsonify(formatted_response)
-    else:
+            ), 429
+            
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        start_time = time.time()
         try:
-            start_time = time.time()
             response = requests.post(
                 TEST_MODEL_ENDPOINT,
                 headers=headers,
                 json=data,
-                stream=data.get("stream", False)
+                stream=data.get("stream", False),
+                timeout=60
             )
-            if response.status_code == 429:
-                return jsonify(response.json()), 429
-            if data.get("stream", False):
-                def generate():
-                    first_chunk_time = None
-                    full_response_content = ""
-                    for chunk in response.iter_content(chunk_size=2048):
-                        if chunk:
-                            if first_chunk_time is None:
-                                first_chunk_time = time.time()
-                            full_response_content += chunk.decode("utf-8")
-                            yield chunk
-                    end_time = time.time()
-                    first_token_time = (
-                        first_chunk_time - start_time
-                        if first_chunk_time else 0
-                    )
-                    total_time = end_time - start_time
-                    prompt_tokens = 0
-                    completion_tokens = 0
-                    response_content = ""
-                    for line in full_response_content.splitlines():
-                        if line.startswith("data:"):
-                            line = line[5:].strip()
-                            if line == "[DONE]":
-                                continue
-                            try:
-                                response_json = json.loads(line)
-                                if (
-                                    "usage" in response_json and
-                                    "completion_tokens" in response_json["usage"]
-                                ):
-                                    completion_tokens = response_json[
-                                        "usage"
-                                    ]["completion_tokens"]
-                                if (
-                                    "choices" in response_json and
-                                    len(response_json["choices"]) > 0 and
-                                    "delta" in response_json["choices"][0] and
-                                    "content" in response_json[
-                                        "choices"
-                                    ][0]["delta"]
-                                ):
-                                    response_content += response_json[
-                                        "choices"
-                                    ][0]["delta"]["content"]
-                                if (
-                                    "usage" in response_json and
-                                    "prompt_tokens" in response_json["usage"]
-                                ):
-                                    prompt_tokens = response_json[
-                                        "usage"
-                                    ]["prompt_tokens"]
-                            except (
-                                KeyError,
-                                ValueError,
-                                IndexError
-                            ) as e:
-                                logging.error(
-                                    f"解析流式响应单行 JSON 失败: {e}, "
-                                    f"行内容: {line}"
-                                )
-                    user_content = extract_user_content(data.get("messages", []))
-                    user_content_replaced = user_content.replace(
-                        '\n', '\\n'
-                    ).replace('\r', '\\n')
-                    response_content_replaced = response_content.replace(
-                        '\n', '\\n'
-                    ).replace('\r', '\\n')
-                    logging.info(
-                        f"使用的key: {api_key}, "
-                        f"提示token: {prompt_tokens}, "
-                        f"输出token: {completion_tokens}, "
-                        f"总共用时: {total_time:.4f}秒, "
-                        f"使用的模型: {model_name}, "
-                        f"用户的内容: {user_content_replaced}, "
-                        f"输出的内容: {response_content_replaced}"
-                    )
-                    with data_lock:
-                        request_timestamps.append(time.time())
-                        token_counts.append(prompt_tokens+completion_tokens)
-                        request_timestamps_day.append(time.time())
-                        token_counts_day.append(prompt_tokens+completion_tokens)
-                return Response(
-                    stream_with_context(generate()),
-                    content_type=response.headers['Content-Type']
-                )
-            else:
-                response.raise_for_status()
-                end_time = time.time()
-                response_json = response.json()
-                total_time = end_time - start_time
-                try:
-                    prompt_tokens = response_json["usage"]["prompt_tokens"]
-                    completion_tokens = response_json[
-                        "usage"
-                    ]["completion_tokens"]
-                except (KeyError, ValueError, IndexError) as e:
-                    logging.error(
-                        f"解析非流式响应 JSON 失败: {e}, "
-                        f"完整内容: {response_json}"
-                    )
-                    prompt_tokens = 0
-                    completion_tokens = 0
-                response_content = response_json["choices"][0]["message"]["content"]
-                user_content = extract_user_content(data.get("messages", []))
-                user_content_replaced = user_content.replace(
-                    '\n', '\\n'
-                ).replace('\r', '\\n')
-                response_content_replaced = response_content.replace(
-                    '\n', '\\n'
-                ).replace('\r', '\\n')
-                logging.info(
-                    f"使用的key: {api_key}, "
-                    f"提示token: {prompt_tokens}, "
-                    f"输出token: {completion_tokens}, "
-                    f"总共用时: {total_time:.4f}秒, "
-                    f"使用的模型: {model_name}, "
-                    f"用户的内容: {user_content_replaced}, "
-                    f"输出的内容: {response_content_replaced}"
-                )
-                with data_lock:
-                    request_timestamps.append(time.time())
-                    if "prompt_tokens" in response_json["usage"] and "completion_tokens" in response_json["usage"]:
-                        token_counts.append(response_json["usage"]["prompt_tokens"] + response_json["usage"]["completion_tokens"])
-                    else:
-                        token_counts.append(0)
-                    request_timestamps_day.append(time.time())
-                    if "prompt_tokens" in response_json["usage"] and "completion_tokens" in response_json["usage"]:
-                        token_counts_day.append(response_json["usage"]["prompt_tokens"] + response_json["usage"]["completion_tokens"])
-                    else:
-                        token_counts_day.append(0)
-                return jsonify(response_json)
+            response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            logging.error(f"请求转发异常: {e}")
-            return jsonify({"error": str(e)}), 500
+            logging.error(f"请求OpenRouter API失败: {str(e)}")
+            return jsonify({"error": "Failed to connect to OpenRouter API", "details": str(e)}), 502
+            
+        if response.status_code == 429:
+            return jsonify(response.json()), 429
+            
+        if data.get("stream", False):
+            try:
+                return Response(
+                    stream_with_context(generate_stream_response(
+                        response, start_time, data, api_key, model_name
+                    )),
+                    content_type="text/event-stream"
+                )
+            except Exception as e:
+                logging.error(f"处理流式响应时发生错误: {str(e)}")
+                return jsonify({"error": "Stream processing error", "details": str(e)}), 500
+        else:
+            try:
+                return process_normal_response(
+                    response, start_time, data, api_key, model_name
+                )
+            except Exception as e:
+                logging.error(f"处理普通响应时发生错误: {str(e)}")
+                return jsonify({"error": "Response processing error", "details": str(e)}), 500
+                
+    except Exception as e:
+        logging.error(f"处理请求时发生未预期的错误: {str(e)}")
+        return jsonify({"error": "Unexpected error", "details": str(e)}), 500
+
+def generate_stream_response(response, start_time, data, api_key, model_name):
+    first_chunk_time = None
+    full_response_content = ""
+    response_content = ""
+    
+    try:
+        for chunk in response.iter_content(chunk_size=2048):
+            if chunk:
+                if first_chunk_time is None:
+                    first_chunk_time = time.time()
+                chunk_str = chunk.decode("utf-8")
+                full_response_content += chunk_str
+                yield chunk
+                
+                try:
+                    for line in chunk_str.splitlines():
+                        if line.startswith("data:"):
+                            line_json = json.loads(line[5:].strip())
+                            if (
+                                "choices" in line_json and
+                                len(line_json["choices"]) > 0 and
+                                "delta" in line_json["choices"][0] and
+                                "content" in line_json["choices"][0]["delta"]
+                            ):
+                                response_content += line_json["choices"][0]["delta"]["content"]
+                except (json.JSONDecodeError, KeyError) as e:
+                    logging.warning(f"解析流式响应chunk时发生错误: {str(e)}")
+                    continue
+                    
+        end_time = time.time()
+        total_time = end_time - start_time
+        first_token_time = first_chunk_time - start_time if first_chunk_time else 0
+        
+        # 记录统计信息
+        log_completion_stats(
+            api_key, model_name, data, response_content,
+            full_response_content, total_time, first_token_time
+        )
+        
+    except Exception as e:
+        logging.error(f"生成流式响应时发生错误: {str(e)}")
+        raise
+
+def process_normal_response(response, start_time, data, api_key, model_name):
+    try:
+        end_time = time.time()
+        response_json = response.json()
+        total_time = end_time - start_time
+        
+        try:
+            prompt_tokens = response_json["usage"]["prompt_tokens"]
+            completion_tokens = response_json["usage"]["completion_tokens"]
+            response_content = response_json["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as e:
+            logging.error(f"解析响应JSON时发生错误: {str(e)}")
+            prompt_tokens = 0
+            completion_tokens = 0
+            response_content = ""
+            
+        # 记录日志
+        user_content = extract_user_content(data.get("messages", []))
+        log_request_stats(
+            api_key, model_name, prompt_tokens, completion_tokens,
+            total_time, user_content, response_content
+        )
+        
+        return jsonify(response_json)
+        
+    except Exception as e:
+        logging.error(f"处理普通响应时发生错误: {str(e)}")
+        raise
+
+def log_completion_stats(api_key, model_name, data, response_content, full_response_content, total_time, first_token_time):
+    try:
+        prompt_tokens = 0
+        completion_tokens = 0
+        
+        for line in full_response_content.splitlines():
+            if line.startswith("data:"):
+                try:
+                    line_json = json.loads(line[5:].strip())
+                    if "usage" in line_json:
+                        prompt_tokens = line_json["usage"].get("prompt_tokens", 0)
+                        completion_tokens = line_json["usage"].get("completion_tokens", 0)
+                except (json.JSONDecodeError, KeyError):
+                    continue
+                    
+        user_content = extract_user_content(data.get("messages", []))
+        user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
+        response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
+        
+        logging.info(
+            f"使用的key: {api_key}, "
+            f"提示token: {prompt_tokens}, "
+            f"输出token: {completion_tokens}, "
+            f"首字用时: {first_token_time:.4f}秒, "
+            f"总共用时: {total_time:.4f}秒, "
+            f"使用的模型: {model_name}, "
+            f"用户的内容: {user_content_replaced}, "
+            f"输出的内容: {response_content_replaced}"
+        )
+        
+        with data_lock:
+            request_timestamps.append(time.time())
+            token_counts.append(prompt_tokens + completion_tokens)
+            request_timestamps_day.append(time.time())
+            token_counts_day.append(prompt_tokens + completion_tokens)
+            
+    except Exception as e:
+        logging.error(f"记录完成统计信息时发生错误: {str(e)}")
+
 if __name__ == '__main__':
     logging.info(f"环境变量：{os.environ}")
     load_keys()
