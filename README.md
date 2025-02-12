@@ -1,4 +1,4 @@
-本项目是原来项目：https://github.com/ikun5200/siliconflow-api 的分支，其支持了huggingface平台部署
+本项目是原来项目：https://github.com/ikun5200/siliconflow-api 的分支，其支持了openrouterAPI 代理
 
 # openrouter API Proxy with docker
 本项目是一个基于 Flask 构建的 openrouter API 代理服务器，支持多种大语言模型的调用，包括 Claude、GPT-4、Gemma、Mixtral 等。
