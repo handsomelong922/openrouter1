@@ -572,7 +572,7 @@ def handsome_chat_completions():
                 headers=headers,
                 json=data,
                 stream=data.get("stream", False),
-                timeout=60
+                timeout=None
             )
             response.raise_for_status()
             
