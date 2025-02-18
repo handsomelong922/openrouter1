@@ -19,6 +19,35 @@ API_PREFIX = os.environ.get('API_PREFIX', '')  # 默认为空字符串
 API_ENDPOINT = "https://openrouter.ai/api/v1/auth/key"
 TEST_MODEL_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models"
+
+# 添加免费请求统计
+FREE_REQUESTS_LIMIT = 200  # 每日免费请求限制
+free_requests_count = {}  # 用于存储每个API密钥的免费请求计数
+last_reset_date = None  # 用于跟踪上次重置计数的日期
+
+def reset_free_requests_if_needed():
+    """每天重置免费请求计数"""
+    global last_reset_date, free_requests_count
+    current_date = datetime.now().date()
+    
+    if last_reset_date != current_date:
+        free_requests_count = {}  # 重置所有计数
+        last_reset_date = current_date
+        logging.info("已重置所有API密钥的免费请求计数")
+
+def increment_free_requests(api_key):
+    """增加API密钥的免费请求计数"""
+    reset_free_requests_if_needed()
+    if api_key not in free_requests_count:
+        free_requests_count[api_key] = 0
+    free_requests_count[api_key] += 1
+    return free_requests_count[api_key]
+
+def get_free_requests_count(api_key):
+    """获取API密钥的免费请求计数"""
+    reset_free_requests_if_needed()
+    return free_requests_count.get(api_key, 0)
+
 def requests_session_with_retries(
     retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 504)
 ):
@@ -436,7 +465,7 @@ def index():
         tpd = sum(token_counts_day)
 
     key_balances = []
-    all_keys = list(chain(*key_status.values())) # Get all keys from all statuses
+    all_keys = list(chain(*key_status.values()))
     with concurrent.futures.ThreadPoolExecutor(max_workers=10000) as executor:
         future_to_key = {executor.submit(get_credit_summary, key): key for key in all_keys}
         for future in concurrent.futures.as_completed(future_to_key):
@@ -444,11 +473,20 @@ def index():
             try:
                 credit_summary = future.result()
                 balance = credit_summary.get("total_balance") if credit_summary else "获取失败"
-                key_balances.append({"key": obfuscate_key(key), "balance": balance})
+                # 添加免费请求计数到返回数据中
+                free_requests = get_free_requests_count(key)
+                key_balances.append({
+                    "key": obfuscate_key(key), 
+                    "balance": balance,
+                    "free_requests": free_requests
+                })
             except Exception as exc:
                 logging.error(f"获取 KEY {obfuscate_key(key)} 余额信息失败: {exc}")
-                key_balances.append({"key": obfuscate_key(key), "balance": "获取失败"})
-
+                key_balances.append({
+                    "key": obfuscate_key(key), 
+                    "balance": "获取失败",
+                    "free_requests": get_free_requests_count(key)
+                })
 
     return render_template('index.html', rpm=rpm, tpm=tpm, rpd=rpd, tpd=tpd, key_balances=key_balances) # Render template instead of jsonify
 
@@ -566,6 +604,15 @@ def handsome_chat_completions():
             return jsonify({
                 "error": "No available API key for this request type or all keys have reached their limits"
             }), 429
+        
+        # 检查免费请求限制
+        if request_type == "free":
+            current_count = increment_free_requests(api_key)
+            if current_count > FREE_REQUESTS_LIMIT:
+                logging.warning(f"API密钥 {obfuscate_key(api_key)} 已达到每日免费请求限制")
+                return jsonify({
+                    "error": "Daily free request limit exceeded"
+                }), 429
             
         headers = {
             "Authorization": f"Bearer {api_key}",
