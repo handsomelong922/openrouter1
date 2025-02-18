@@ -76,10 +76,14 @@ def get_credit_summary(api_key):
             is_free_tier = data.get("is_free_tier", False)
             rate_limit = data.get("rate_limit", {})
             
-            # 如果limit为None，使用limit_remaining作为total_balance
-            total_balance = limit_remaining if limit_remaining is not None else (
-                limit - usage if limit is not None else float('inf')
-            )
+            # 修改余额计算逻辑
+            if limit_remaining is not None:
+                total_balance = limit_remaining
+            elif limit is not None:
+                total_balance = limit - usage
+            else:
+                # 如果是免费用户且没有limit信息，设置余额为0
+                total_balance = 0 if is_free_tier else float('inf')
             
             logging.info(f"获取额度，API Key：{api_key}，当前额度: {total_balance}, "
                         f"使用量: {usage}, 限额: {limit}, 剩余限额: {limit_remaining}, "
