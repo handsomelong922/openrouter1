@@ -13,6 +13,9 @@ os.environ['TZ'] = 'Asia/Shanghai'
 time.tzset()
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
+
+# 添加API前缀配置
+API_PREFIX = os.environ.get('API_PREFIX', '')  # 默认为空字符串
 API_ENDPOINT = "https://openrouter.ai/api/v1/auth/key"
 TEST_MODEL_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models"
@@ -449,8 +452,8 @@ def index():
 
     return render_template('index.html', rpm=rpm, tpm=tpm, rpd=rpd, tpd=tpd, key_balances=key_balances) # Render template instead of jsonify
 
-@app.route('/models', methods=['GET'])
-@app.route('/v1/models', methods=['GET'])
+@app.route(f'{API_PREFIX}/models', methods=['GET'])
+@app.route(f'{API_PREFIX}/v1/models', methods=['GET'])
 def list_models():
     if not check_authorization(request):
         return jsonify({"error": "Unauthorized"}), 401
@@ -494,7 +497,7 @@ def list_models():
     })
     return response
 
-@app.route('/v1/dashboard/billing/usage', methods=['GET'])
+@app.route(f'{API_PREFIX}/v1/dashboard/billing/usage', methods=['GET'])
 def billing_usage():
     if not check_authorization(request):
         return jsonify({"error": "Unauthorized"}), 401
@@ -504,7 +507,7 @@ def billing_usage():
         "data": daily_usage,
         "total_usage": 0
     })
-@app.route('/v1/dashboard/billing/subscription', methods=['GET'])
+@app.route(f'{API_PREFIX}/v1/dashboard/billing/subscription', methods=['GET'])
 def billing_subscription():
     if not check_authorization(request):
         return jsonify({"error": "Unauthorized"}), 401
@@ -533,7 +536,7 @@ def billing_subscription():
         "hard_limit_usd": total_balance,
         "system_hard_limit_usd": total_balance
     })
-@app.route('/v1/chat/completions', methods=['POST'])
+@app.route(f'{API_PREFIX}/v1/chat/completions', methods=['POST'])
 def handsome_chat_completions():
     try:
         if not check_authorization(request):
@@ -805,8 +808,8 @@ def process_normal_response(response, start_time, data, api_key, model_name):
         }), 500
 
 # 添加OPTIONS请求处理
-@app.route('/models', methods=['OPTIONS'])
-@app.route('/v1/models', methods=['OPTIONS'])
+@app.route(f'{API_PREFIX}/models', methods=['OPTIONS'])
+@app.route(f'{API_PREFIX}/v1/models', methods=['OPTIONS'])
 def handle_options():
     response = jsonify({})
     response.headers.add('Access-Control-Allow-Origin', '*')

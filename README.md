@@ -52,6 +52,7 @@ https://huggingface.co/spaces/hf-demo-linux/sili?duplicate=true
 | `BAN_MODELS`       | 否   | 一个 JSON 数组，包含要禁用的模型名称。 例如 `["model1", "model2"]`。                                                                                                |
 | `PORT`             | 否   | 应用监听的端口号。 Vercel 会自动设置此变量，通常不需要手动设置。 默认值为 `7860`。                                                                                      |
 | `FREE_MODEL_TEST_KEY` | 否 | 用于测试模型的可用性的免费API密钥。如果你没有提供自己的，则默认使用`FREE_MODEL_TEST_KEY`中提供的密钥。这通常是一个可以用来测试模型可用性，但没有太多额度的密钥。 |
+| `API_PREFIX` | 否 | API路由的前缀。例如设置为 `/api` 则所有API路由都会加上 `/api` 前缀。默认为空。 |
 
 
 
