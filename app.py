@@ -8,11 +8,24 @@ from flask import Flask, request, jsonify, Response, stream_with_context, render
 from werkzeug.middleware.proxy_fix import ProxyFix
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
-from flask_cors import CORS  # 添加这行
+from flask_cors import CORS
+import platform
+import psutil
 os.environ['TZ'] = 'Asia/Shanghai'
 time.tzset()
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
+
+# 记录服务启动时间
+SERVICE_START_TIME = datetime.now()
+
+# 创建自定义日志过滤器，排除 /ping 端点的日志
+class PingFilter(logging.Filter):
+    def filter(self, record):
+        # 检查请求路径是否是 /ping
+        if hasattr(request, 'path') and (request.path == '/ping' or request.path.endswith('/ping')):
+            return False  # 不记录 /ping 请求的日志
+        return True  # 记录其他所有请求的日志
 
 # 添加API前缀配置
 API_PREFIX = os.environ.get('API_PREFIX', '')  # 默认为空字符串
@@ -72,6 +85,12 @@ session = requests_session_with_retries()
 app = Flask(__name__)
 CORS(app)  # 启用CORS支持
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
+
+# 将自定义日志过滤器应用到 Flask 的日志记录器
+app.logger.addFilter(PingFilter())
+# 也将过滤器应用到 Werkzeug 的日志记录器
+logging.getLogger('werkzeug').addFilter(PingFilter())
+
 models = {
     "text": [],
     "free_text": []
@@ -446,7 +465,104 @@ scheduler.add_job(load_keys, 'interval', hours=1)
 scheduler.remove_all_jobs()
 scheduler.add_job(refresh_models, 'interval', hours=1)
 
+@app.route(f'{API_PREFIX}/ping', methods=['GET'])
+@app.route('/ping', methods=['GET'])
+def ping():
+    """返回服务运行状态信息，不记入日志"""
+    uptime = datetime.now() - SERVICE_START_TIME
+    # 格式化运行时间
+    days, seconds = uptime.days, uptime.seconds
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds = seconds % 60
+    uptime_str = f"{days}天 {hours}小时 {minutes}分钟 {seconds}秒"
+    
+    # 统计有效API密钥数量
+    valid_keys_count = len(valid_keys_global) if 'valid_keys_global' in globals() else 0
+    free_keys_count = len(free_keys_global) if 'free_keys_global' in globals() else 0
+    unverified_keys_count = len(unverified_keys_global) if 'unverified_keys_global' in globals() else 0
+    
+    # 获取系统信息
+    try:
+        cpu_usage = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+        memory_usage = {
+            "total": f"{memory.total / (1024**3):.2f} GB",
+            "available": f"{memory.available / (1024**3):.2f} GB", 
+            "percent": f"{memory.percent}%"
+        }
+        disk = psutil.disk_usage('/')
+        disk_usage = {
+            "total": f"{disk.total / (1024**3):.2f} GB",
+            "free": f"{disk.free / (1024**3):.2f} GB",
+            "percent": f"{disk.percent}%"
+        }
+    except ImportError:
+        # 如果psutil未安装
+        cpu_usage = "psutil未安装"
+        memory_usage = "psutil未安装"
+        disk_usage = "psutil未安装"
+    except Exception as e:
+        cpu_usage = f"获取失败: {str(e)}"
+        memory_usage = f"获取失败: {str(e)}"
+        disk_usage = f"获取失败: {str(e)}"
+    
+    # 统计可用模型数量
+    models_count = {
+        "text": len(models["text"]),
+        "free_text": len(models["free_text"])
+    }
+    
+    # 获取请求统计信息
+    current_time = time.time()
+    one_minute_ago = current_time - 60
+    one_day_ago = current_time - 86400
+    with data_lock:
+        while request_timestamps and request_timestamps[0] < one_minute_ago:
+            request_timestamps.pop(0)
+            token_counts.pop(0)
+        rpm = len(request_timestamps)
+        tpm = sum(token_counts)
+    with data_lock:
+        while request_timestamps_day and request_timestamps_day[0] < one_day_ago:
+            request_timestamps_day.pop(0)
+            token_counts_day.pop(0)
+        rpd = len(request_timestamps_day)
+        tpd = sum(token_counts_day)
+    
+    status_info = {
+        "status": "running",
+        "service": {
+            "start_time": SERVICE_START_TIME.strftime("%Y-%m-%d %H:%M:%S"),
+            "uptime": uptime_str,
+        },
+        "system": {
+            "platform": platform.platform(),
+            "python_version": platform.python_version(),
+            "cpu_usage": cpu_usage,
+            "memory_usage": memory_usage,
+            "disk_usage": disk_usage
+        },
+        "api_keys": {
+            "valid": valid_keys_count,
+            "free": free_keys_count,
+            "unverified": unverified_keys_count,
+            "total": valid_keys_count + free_keys_count + unverified_keys_count
+        },
+        "models": models_count,
+        "requests": {
+            "per_minute": rpm,
+            "per_day": rpd,
+            "tokens_per_minute": tpm,
+            "tokens_per_day": tpd
+        },
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    return jsonify(status_info)
+
 @app.route('/')
+
 def index():
     current_time = time.time()
     one_minute_ago = current_time - 60
@@ -873,4 +989,4 @@ if __name__ == '__main__':
     refresh_models()
     logging.info("首次刷新模型列表已手动触发执行")
     app.run(debug=False,host='0.0.0.0',port=int(os.environ.get('PORT', 7860)))
-    
+
