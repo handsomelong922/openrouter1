@@ -33,6 +33,54 @@ API_ENDPOINT = "https://openrouter.ai/api/v1/auth/key"
 TEST_MODEL_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models"
 
+# 添加模型提供商路由配置
+MODEL_PROVIDER_ROUTING = {}  # 存储模型->提供商的路由配置
+
+# 从环境变量加载模型提供商路由配置
+def load_model_provider_routing():
+    """从环境变量加载模型提供商路由配置"""
+    global MODEL_PROVIDER_ROUTING
+    
+    # 设置默认路由配置
+    default_routing = {}
+    
+    # 首先应用默认配置
+    MODEL_PROVIDER_ROUTING = default_routing.copy()
+    
+    # 然后从环境变量加载自定义配置
+    routing_config = os.environ.get('MODEL_PROVIDER_ROUTING', '')
+    if (routing_config):
+        try:
+            routing_data = json.loads(routing_config)
+            if isinstance(routing_data, dict):
+                # 将环境变量中的配置合并到默认配置中（会覆盖相同的键）
+                MODEL_PROVIDER_ROUTING.update(routing_data)
+                logging.info(f"已从环境变量加载模型提供商路由配置")
+            else:
+                logging.warning("MODEL_PROVIDER_ROUTING 环境变量必须是有效的JSON对象")
+        except json.JSONDecodeError:
+            logging.warning("MODEL_PROVIDER_ROUTING 环境变量包含无效的JSON数据")
+    
+    # 记录最终的路由配置
+    if MODEL_PROVIDER_ROUTING:
+        formatted_config = json.dumps(MODEL_PROVIDER_ROUTING, ensure_ascii=False, indent=2)
+        logging.info(f"最终模型路由配置:\n{formatted_config}")
+    else:
+        logging.info("未配置任何模型路由")
+    
+    return MODEL_PROVIDER_ROUTING
+
+# 获取指定模型的提供商路由配置
+def get_model_provider_routing(model_name):
+    """获取指定模型的提供商路由配置"""
+    if model_name in MODEL_PROVIDER_ROUTING:
+        return MODEL_PROVIDER_ROUTING[model_name]
+    # 尝试获取模型前缀的配置（例如"gpt-3.5"可能匹配"gpt-3.5-turbo"）
+    for prefix, providers in MODEL_PROVIDER_ROUTING.items():
+        if model_name.startswith(prefix):
+            return providers
+    return None
+
 # 添加免费请求统计
 FREE_REQUESTS_LIMIT = 200  # 每日免费请求限制
 free_requests_count = {}  # 用于存储每个API密钥的免费请求计数
@@ -715,6 +763,24 @@ def handsome_chat_completions():
             models["free_text"]
         )
         
+        # 检查是否有针对此模型的提供商路由配置
+        provider_routing = get_model_provider_routing(model_name)
+        
+        # 如果存在特定模型的提供商路由配置，添加到请求中
+        if provider_routing:
+            # 确保data中有provider字段，如果没有则初始化为空字典
+            if 'provider' not in data:
+                data['provider'] = {}
+            
+            # 如果是列表，则设置为order
+            if isinstance(provider_routing, list):
+                data['provider']['order'] = provider_routing
+                logging.info(f"应用模型 {model_name} 的提供商路由配置: {provider_routing}")
+            # 如果是字典（完整的provider配置），则直接使用
+            elif isinstance(provider_routing, dict):
+                data['provider'] = provider_routing
+                logging.info(f"应用模型 {model_name} 的完整提供商配置: {provider_routing}")
+        
         api_key = select_key(request_type, model_name)
         if not api_key:
             return jsonify({
@@ -984,9 +1050,11 @@ if __name__ == '__main__':
     logging.info(f"环境变量：{os.environ}")
     load_keys()
     logging.info("程序启动时首次加载 keys 已执行")
+    load_model_provider_routing()
+    logging.info("已加载模型提供商路由配置")
     scheduler.start()
     logging.info("首次加载 keys 已手动触发执行")
     refresh_models()
     logging.info("首次刷新模型列表已手动触发执行")
-    app.run(debug=False,host='0.0.0.0',port=int(os.environ.get('PORT', 7860)))
+    app.run(debug=False,host='0.0.0.0',port=int(os.environ.get('PORT', 7860')))
 
