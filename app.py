@@ -22,8 +22,16 @@ SERVICE_START_TIME = datetime.now()
 # 创建自定义日志过滤器，排除 /ping 端点的日志
 class PingFilter(logging.Filter):
     def filter(self, record):
-        # 检查请求路径是否是 /ping
-        if hasattr(request, 'path') and (request.path == '/ping' or request.path.endswith('/ping')):
+        # 首先检查是否在请求上下文内，避免"Working outside of request context"错误
+        try:
+            from flask import request as _request
+            request_exists = _request._get_current_object() is not None
+        except (RuntimeError, ImportError):
+            # 如果不在请求上下文中，允许日志通过
+            return True
+            
+        # 仅在请求上下文中检查路径
+        if request_exists and hasattr(_request, 'path') and (_request.path == '/ping' or _request.path.endswith('/ping')):
             return False  # 不记录 /ping 请求的日志
         return True  # 记录其他所有请求的日志
 
@@ -767,7 +775,7 @@ def handsome_chat_completions():
         provider_routing = get_model_provider_routing(model_name)
         
         # 如果存在特定模型的提供商路由配置，添加到请求中
-        if provider_routing:
+        if (provider_routing):
             # 确保data中有provider字段，如果没有则初始化为空字典
             if 'provider' not in data:
                 data['provider'] = {}
