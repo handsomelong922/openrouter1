@@ -1056,5 +1056,5 @@ if __name__ == '__main__':
     logging.info("首次加载 keys 已手动触发执行")
     refresh_models()
     logging.info("首次刷新模型列表已手动触发执行")
-    app.run(debug=False,host='0.0.0.0',port=int(os.environ.get('PORT', 7860')))
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 7860)))
 
