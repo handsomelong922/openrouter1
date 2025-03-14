@@ -757,13 +757,11 @@ def handsome_chat_completions():
             return jsonify({"error": "Invalid request data"}), 400
         
         model_name = data['model']
-        if model_name not in models["text"]:
-            if "DeepSeek-R1" in model_name and (model_name.endswith("-openwebui") or model_name.endswith("-thinking")):
-                model_realname = model_name.replace("-thinking", "").replace("-openwebui", "")
-            else:
-                return jsonify({"error": "Invalid model"}), 400
+        if (model_name not in models["text"] and
+            not ("DeepSeek-R1" in model_name and (model_name.endswith("-openwebui") or model_name.endswith("-thinking")))):
+            return jsonify({"error": "Invalid model"}), 400
         else:
-            model_realname = model_name
+            model_realname = model_name.replace("-thinking", "").replace("-openwebui", "") if "DeepSeek-R1" in model_name else model_name
             
         request_type = determine_request_type(
             model_realname,
@@ -887,30 +885,68 @@ def generate_stream_response(response, start_time, data, api_key, model_name):
     first_chunk_time = None
     full_response_content = ""
     response_content = ""
+    buffer = ""  # 添加buffer来存储跨chunk的不完整数据
     
     try:
         for chunk in response.iter_content(chunk_size=2048):
             if chunk:
                 if first_chunk_time is None:
                     first_chunk_time = time.time()
-                chunk_str = chunk.decode("utf-8")
+                chunk_str = chunk.decode("utf-8", errors="replace")  # 添加错误处理
                 full_response_content += chunk_str
                 yield chunk
                 
+                # 将当前chunk添加到buffer
+                buffer += chunk_str
+                
+                # 处理buffer中完整的行
+                lines = buffer.split("\n")
+                # 最后一行可能不完整，保留在buffer中
+                buffer = lines.pop()
+                
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith("data:") and not line.startswith("data: [DONE]"):
+                        try:
+                            data_content = line[5:].strip()
+                            if data_content:  # 确保不是空字符串
+                                line_json = json.loads(data_content)
+                                if (
+                                    "choices" in line_json and
+                                    len(line_json["choices"]) > 0 and
+                                    "delta" in line_json["choices"][0] and
+                                    "content" in line_json["choices"][0]["delta"]
+                                ):
+                                    response_content += line_json["choices"][0]["delta"]["content"]
+                        except json.JSONDecodeError as e:
+                            # 只有在不是已知的特殊消息时才记录警告
+                            if not (": OPENROUTER PROCESSING" in line or "data: [DONE]" in line):
+                                logging.debug(f"无法解析JSON行: {line[:100]}... 错误: {str(e)}")
+                            continue
+                        except (KeyError, IndexError) as e:
+                            logging.debug(f"处理解析后的JSON时出错: {str(e)}")
+                            continue
+                    elif line.startswith(": OPENROUTER PROCESSING") or line == "data: [DONE]":
+                        # 这是OpenRouter发送的保持连接的注释或结束标记，可以安全忽略
+                        pass
+                    
+        # 处理最后一个可能部分的行
+        if buffer.strip():
+            if buffer.startswith("data:") and not buffer.startswith("data: [DONE]"):
                 try:
-                    for line in chunk_str.splitlines():
-                        if line.startswith("data:"):
-                            line_json = json.loads(line[5:].strip())
-                            if (
-                                "choices" in line_json and
-                                len(line_json["choices"]) > 0 and
-                                "delta" in line_json["choices"][0] and
-                                "content" in line_json["choices"][0]["delta"]
-                            ):
-                                response_content += line_json["choices"][0]["delta"]["content"]
-                except (json.JSONDecodeError, KeyError) as e:
-                    logging.warning(f"解析流式响应chunk时发生错误: {str(e)}")
-                    continue
+                    data_content = buffer[5:].strip()
+                    if data_content:
+                        line_json = json.loads(data_content)
+                        if (
+                            "choices" in line_json and
+                            len(line_json["choices"]) > 0 and
+                            "delta" in line_json["choices"][0] and
+                            "content" in line_json["choices"][0]["delta"]
+                        ):
+                            response_content += line_json["choices"][0]["delta"]["content"]
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    # 忽略最后不完整的行
+                    pass
                     
         end_time = time.time()
         total_time = end_time - start_time
@@ -955,19 +991,33 @@ def log_completion_stats(api_key, model_name, data, response_content, full_respo
         prompt_tokens = 0
         completion_tokens = 0
         
+        # 改进解析逻辑，更健壮地处理usage信息
         for line in full_response_content.splitlines():
-            if line.startswith("data:"):
+            if line.startswith("data:") and "usage" in line:
                 try:
-                    line_json = json.loads(line[5:].strip())
+                    data_content = line[5:].strip()
+                    if not data_content:
+                        continue
+                        
+                    line_json = json.loads(data_content)
                     if "usage" in line_json:
-                        prompt_tokens = line_json["usage"].get("prompt_tokens", 0)
-                        completion_tokens = line_json["usage"].get("completion_tokens", 0)
+                        # 累加token数量，因为在流式响应中可能会有多个usage对象
+                        prompt_tokens = max(prompt_tokens, line_json["usage"].get("prompt_tokens", 0))
+                        new_completion = line_json["usage"].get("completion_tokens", 0)
+                        if new_completion > completion_tokens:
+                            completion_tokens = new_completion
                 except (json.JSONDecodeError, KeyError):
                     continue
                     
         user_content = extract_user_content(data.get("messages", []))
         user_content_replaced = user_content.replace('\n', '\\n').replace('\r', '\\n')
         response_content_replaced = response_content.replace('\n', '\\n').replace('\r', '\\n')
+        
+        # 限制日志长度以防止过大的日志文件
+        if len(user_content_replaced) > 500:
+            user_content_replaced = user_content_replaced[:497] + "..."
+        if len(response_content_replaced) > 500:
+            response_content_replaced = response_content_replaced[:497] + "..."
         
         logging.info(
             f"使用的key: {api_key}, "
