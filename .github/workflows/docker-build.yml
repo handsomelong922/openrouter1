@@ -40,6 +40,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long
+            type=raw,value=latest
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -52,14 +53,4 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max 
-          
-      - name: Build and push Docker image (main)
-        run: |
-            docker build -t yourrepo/openrouter1:main .
-            docker push yourrepo/openrouter1:main
-
-      - name: Tag as latest and push
-        run: |
-             docker tag yourrepo/openrouter1:main yourrepo/openrouter1:latest
-             docker push yourrepo/openrouter1:latest
+          cache-to: type=gha,mode=max
