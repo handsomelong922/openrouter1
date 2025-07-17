@@ -189,7 +189,7 @@
             <tr>
               <th>API 密钥 (已打码)</th>
               <th>余额</th>
-              <th>每日免费请求 (200/天)</th>
+              <th>每日免费请求 (50/天)</th>
             </tr>
           </thead>
           <tbody>
@@ -197,7 +197,7 @@
             <tr>
               <td class="text-break">{{ key_balance.key }}</td>
               <td>{{ key_balance.balance }}</td>
-              <td>{{ key_balance.free_requests|default(0) }}/200</td>
+              <td>{{ key_balance.free_requests|default(0) }}/50</td>
             </tr>
             {% endfor %}
             {% if not key_balances %}
