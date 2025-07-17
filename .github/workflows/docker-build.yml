@@ -53,3 +53,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max 
+          
+      - name: Build and push Docker image (main)
+        run: |
+            docker build -t yourrepo/openrouter1:main .
+            docker push yourrepo/openrouter1:main
+
+      - name: Tag as latest and push
+        run: |
+             docker tag yourrepo/openrouter1:main yourrepo/openrouter1:latest
+             docker push yourrepo/openrouter1:latest
