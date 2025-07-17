@@ -90,7 +90,7 @@ def get_model_provider_routing(model_name):
     return None
 
 # 添加免费请求统计
-FREE_REQUESTS_LIMIT = 200  # 每日免费请求限制
+FREE_REQUESTS_LIMIT = 50  # 每日免费请求限制
 free_requests_count = {}  # 用于存储每个API密钥的免费请求计数
 last_reset_date = None  # 用于跟踪上次重置计数的日期
 
